@@ -11,7 +11,7 @@
 //! If performance characteristics later justify it, the internal engine can be
 //! swapped behind this abstraction without changing higher layers.
 
-use std::collections::btree_map::{IntoIter, Iter, Keys, Range, Values};
+use std::collections::btree_map::{IntoIter, Iter, Keys, Values};
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
@@ -95,15 +95,15 @@ impl MemoryMap {
     ///
     /// This is crate-level because mutating values directly bypasses some higher
     /// level store semantics.
+    #[allow(dead_code)]
     pub(crate) fn get_mut(&mut self, key: &Key) -> Option<&mut Value> {
         self.entries.get_mut(key)
     }
 
     /// Returns the value for the key or a structured not-found error.
     pub fn require(&self, key: &Key) -> Result<&Value> {
-        self.get(key).ok_or_else(|| {
-            AgentMemoryError::NotFound(NotFoundError::new("key", key.as_str()))
-        })
+        self.get(key)
+            .ok_or_else(|| AgentMemoryError::NotFound(NotFoundError::new("key", key.as_str())))
     }
 
     /// Removes an entry by key and returns the previous value if present.
@@ -113,9 +113,8 @@ impl MemoryMap {
 
     /// Removes an entry by key or returns a structured not-found error.
     pub fn remove_required(&mut self, key: &Key) -> Result<Value> {
-        self.remove(key).ok_or_else(|| {
-            AgentMemoryError::NotFound(NotFoundError::new("key", key.as_str()))
-        })
+        self.remove(key)
+            .ok_or_else(|| AgentMemoryError::NotFound(NotFoundError::new("key", key.as_str())))
     }
 
     /// Returns all entries in deterministic sorted order.
@@ -241,10 +240,10 @@ impl MemoryMap {
         Ok(())
     }
 
-    fn range_for_prefix(
-        &self,
-        prefix: &KeyPrefix,
-    ) -> Range<'_, Key, Value> {
+    fn range_for_prefix<'a>(
+        &'a self,
+        prefix: &'a KeyPrefix,
+    ) -> impl Iterator<Item = (&'a Key, &'a Value)> + 'a {
         let start = Bound::Included(
             Key::new(prefix.as_str())
                 .expect("validated prefix must be convertible to key boundary"),
@@ -252,9 +251,9 @@ impl MemoryMap {
 
         let end = Bound::Unbounded;
 
-        self.entries.range((start, end)).take_while(move |(key, _)| {
-            prefix.matches(key)
-        })
+        self.entries
+            .range((start, end))
+            .take_while(move |(key, _)| prefix.matches(key))
     }
 }
 

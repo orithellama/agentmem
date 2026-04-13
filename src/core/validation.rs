@@ -32,30 +32,23 @@ pub fn validate_key(input: &str) -> Result<()> {
     validate_common_text("key", input, MIN_KEY_LEN, MAX_KEY_LEN)?;
 
     if input.starts_with('/') || input.ends_with('/') {
-        return Err(ValidationError::invalid_format(
-            "key",
-            "must not start or end with '/'",
-        )
-        .into());
+        return Err(
+            ValidationError::invalid_format("key", "must not start or end with '/'").into(),
+        );
     }
 
     if input.contains("//") {
-        return Err(ValidationError::invalid_format(
-            "key",
-            "must not contain empty path segments",
-        )
-        .into());
+        return Err(
+            ValidationError::invalid_format("key", "must not contain empty path segments").into(),
+        );
     }
 
     let segments: Vec<&str> = input.split('/').collect();
 
     if segments.len() > MAX_SEGMENT_COUNT {
-        return Err(ValidationError::too_long(
-            "key_segments",
-            segments.len(),
-            MAX_SEGMENT_COUNT,
-        )
-        .into());
+        return Err(
+            ValidationError::too_long("key_segments", segments.len(), MAX_SEGMENT_COUNT).into(),
+        );
     }
 
     for segment in segments {
@@ -73,19 +66,12 @@ pub fn validate_key(input: &str) -> Result<()> {
 /// - `project/demo`
 /// - `session/2026-04-12`
 pub fn validate_namespace(input: &str) -> Result<()> {
-    validate_common_text(
-        "namespace",
-        input,
-        MIN_NAMESPACE_LEN,
-        MAX_NAMESPACE_LEN,
-    )?;
+    validate_common_text("namespace", input, MIN_NAMESPACE_LEN, MAX_NAMESPACE_LEN)?;
 
     if input.starts_with('/') || input.ends_with('/') {
-        return Err(ValidationError::invalid_format(
-            "namespace",
-            "must not start or end with '/'",
-        )
-        .into());
+        return Err(
+            ValidationError::invalid_format("namespace", "must not start or end with '/'").into(),
+        );
     }
 
     if input.contains("//") {
@@ -132,11 +118,7 @@ pub fn validate_value(input: &str) -> Result<()> {
     validate_common_text("value", input, MIN_VALUE_LEN, MAX_VALUE_LEN)?;
 
     if input.contains('\0') {
-        return Err(ValidationError::invalid_format(
-            "value",
-            "must not contain NUL bytes",
-        )
-        .into());
+        return Err(ValidationError::invalid_format("value", "must not contain NUL bytes").into());
     }
 
     Ok(())
@@ -202,11 +184,9 @@ pub fn validate_store_path(path: &Path) -> Result<()> {
     })?;
 
     if file_name.to_string_lossy().trim().is_empty() {
-        return Err(ValidationError::invalid_path(
-            "store_path",
-            "file name must not be empty",
-        )
-        .into());
+        return Err(
+            ValidationError::invalid_path("store_path", "file name must not be empty").into(),
+        );
     }
 
     for component in path.components() {
@@ -227,19 +207,12 @@ pub fn validate_store_path(path: &Path) -> Result<()> {
 /// - `-`
 /// - `.`
 fn validate_segment(field: &'static str, segment: &str) -> Result<()> {
-    validate_common_text(
-        field,
-        segment,
-        MIN_KEY_SEGMENT_LEN,
-        MAX_KEY_SEGMENT_LEN,
-    )?;
+    validate_common_text(field, segment, MIN_KEY_SEGMENT_LEN, MAX_KEY_SEGMENT_LEN)?;
 
     if segment == "." || segment == ".." {
-        return Err(ValidationError::invalid_segment(
-            field,
-            "reserved segment is not allowed",
-        )
-        .into());
+        return Err(
+            ValidationError::invalid_segment(field, "reserved segment is not allowed").into(),
+        );
     }
 
     for (index, ch) in segment.char_indices() {
@@ -280,11 +253,7 @@ fn validate_common_text(
     }
 
     if input.contains('\0') {
-        return Err(ValidationError::invalid_format(
-            field,
-            "must not contain NUL bytes",
-        )
-        .into());
+        return Err(ValidationError::invalid_format(field, "must not contain NUL bytes").into());
     }
 
     Ok(())

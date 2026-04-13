@@ -167,8 +167,7 @@ pub fn split_key(key: &Key) -> Option<(Namespace, String)> {
 
     raw.rsplit_once('/').map(|(prefix, leaf)| {
         (
-            Namespace::new(prefix)
-                .expect("validated key prefix must always be a valid namespace"),
+            Namespace::new(prefix).expect("validated key prefix must always be a valid namespace"),
             leaf.to_owned(),
         )
     })
