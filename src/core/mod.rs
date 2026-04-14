@@ -8,12 +8,12 @@
 //! - namespace helpers for prefix-aware key operations
 //! - the in-memory map abstraction used by the store layer
 //!
-//! The intent is to keep these concerns centralised so that:
+//! The intent is to keep these concerns centralized so that:
 //!
 //! - validation policy is not duplicated across the codebase
 //! - limits remain explicit and reviewable
-//! - typed wrappers in `types.rs` can delegate to a single source of truth
-//! - future changes to the storage model remain controlled and auditable
+//! - typed wrappers in `types.rs` delegate to a single source of truth
+//! - future storage model changes remain controlled and auditable
 
 pub mod limits;
 pub mod map;
@@ -21,19 +21,21 @@ pub mod namespace;
 pub mod validation;
 
 /// Re-export of the in-memory map type used by the store layer.
-///
-/// Keeping this re-export here makes the internal dependency direction a little
-/// cleaner for higher-level modules.
 pub use self::map::MemoryMap;
 
 /// Re-export of commonly used namespace helpers.
-pub use self::namespace::{is_key_within_namespace, join_namespace_and_leaf, parent_namespace};
+pub use self::namespace::{
+    is_key_within_namespace,
+    join_namespace_and_leaf,
+    parent_namespace,
+};
 
-/// Re-export of selected validation entrypoints used widely across the crate.
-///
-/// These functions define the canonical rules for the crate's typed wrappers
-/// and CLI input validation.
+/// Re-export of canonical validation entrypoints.
 pub use self::validation::{
-    validate_key, validate_key_leaf, validate_namespace, validate_project_name,
-    validate_store_path, validate_value,
+    validate_key,
+    validate_key_leaf,
+    validate_namespace,
+    validate_project_name,
+    validate_store_path,
+    validate_value,
 };

@@ -1,55 +1,106 @@
-# Agent Memory RS
+# AgentMem
 
-Secure local-first memory infrastructure for AI agents, built in Rust.
+Local-first memory infrastructure for AI agents. AgentMem gives tools like Claude, Codex, Gemini, OpenClaw, Hermes, local coding agents and autonomous scripts a structured way to persist memory between runs.
 
-## Purpose
+Instead of losing context every session or scattering state across JSON files, temp folders, prompts, and shell history, AgentMem provides a clean shared memory layer.
 
-Agent Memory RS gives AI tools like Claude, Codex, Gemini, Hermes, OpenClaw and custom agents a better way to manage local data.
+---
 
-Instead of scattered JSON files, hidden temp folders, or unsafe ad-hoc state, this project provides:
+# Why AgentMem Exists
 
-- secure local persistence
-- typed Rust APIs
-- deterministic CLI
-- project onboarding flow
-- namespace-based memory
-- atomic writes
-- future multi-agent support
+Most AI tools today are stateless.
 
-## Example CLI
+That means they repeatedly need to rediscover:
 
-```bash
-agentmem init
-agentmem set agent/claude/current_task "Review PR"
-agentmem get agent/claude/current_task
-agentmem list agent/claude
-```
+- what project this is
+- where files live
+- coding conventions
+- current task status
+- prior fixes
+- known bugs
+- open decisions
+- team notes
 
-## First Run Onboarding
+That wastes:
 
-```bash
-agentmem init
-```
+- tokens
+- time
+- API cost
+- focus
+- context window space
 
-Prompts:
+AgentMem fixes that.
 
-1. Project name
-2. Storage location
-3. Confirm path
-4. Create config
-5. Ready
+---
 
-## Repo Layout
+# Core Benefits
+
+## Persistent Memory
+
+Store useful project context between sessions.
+
+## Local-First
+
+Your memory stays on your machine.
+
+## Fast CLI
+
+Simple commands that agents and humans can both use.
+
+## Structured Namespaces
+
+Organize memory cleanly.
 
 ```text
-src/
-docs/
-tests/
-examples/
-schemas/
-scripts/
+agent/claude/current_task
+project/demo/stack
+repo/build_command
+bugs/auth/login
 ```
 
-## Status
+######################################
+##      Installation + Setup        ##
+######################################
 
-Bootstrap phase.
+```bash
+# install globally
+cargo install agentmem
+
+# verify install
+agentmem --help
+
+# go to your project
+cd my-project
+
+# initialize project memory and index codebase
+agentmem init
+agentmem index
+# use re-index after changes to codebase
+agentmem reindex
+
+# store memory
+agentmem set project/name "My Project"
+agentmem set repo/stack "Next.js + TypeScript"
+agentmem set project/current_goal "Ship billing v2"
+agentmem set agent/claude/current_task "Fix auth bug"
+
+# read memory
+agentmem get project/name
+agentmem get agent/claude/current_task
+
+# list everything
+agentmem list
+```
+
+######################################
+##              Examples            ##
+######################################
+
+cd my-nextjs-app
+
+agentmem init
+agentmem set repo/stack "Next.js + Supabase"
+agentmem set project/current_goal "Launch payments"
+agentmem set agent/claude/current_task "Fix checkout bug"
+agentmem get project/current_goal
+

@@ -15,15 +15,27 @@
 use std::path::{Component, Path};
 
 use crate::core::limits::{
-    within_range, MAX_KEY_LEN, MAX_KEY_SEGMENT_LEN, MAX_NAMESPACE_LEN, MAX_PROJECT_NAME_LEN,
-    MAX_SEGMENT_COUNT, MAX_STORE_PATH_LEN, MAX_VALUE_LEN, MIN_KEY_LEN, MIN_KEY_SEGMENT_LEN,
-    MIN_NAMESPACE_LEN, MIN_PROJECT_NAME_LEN, MIN_VALUE_LEN,
+    within_range,
+    MAX_KEY_LEN,
+    MIN_KEY_LEN,
+    MAX_KEY_SEGMENT_LEN,
+    MIN_KEY_SEGMENT_LEN,
+    MAX_NAMESPACE_LEN,
+    MIN_NAMESPACE_LEN,
+    MAX_PROJECT_NAME_LEN,
+    MIN_PROJECT_NAME_LEN,
+    MAX_SEGMENT_COUNT,
+    MAX_STORE_PATH_LEN,
+    MAX_STORE_FILE_NAME_LEN,
+    MAX_VALUE_LEN,
+    MIN_VALUE_LEN,
 };
+
 use crate::error::{Result, ValidationError};
 
 /// Validates a fully qualified key.
 ///
-/// Expected examples:
+/// Examples:
 ///
 /// - `agent/claude/current_task`
 /// - `project/demo/root`
@@ -31,17 +43,8 @@ use crate::error::{Result, ValidationError};
 pub fn validate_key(input: &str) -> Result<()> {
     validate_common_text("key", input, MIN_KEY_LEN, MAX_KEY_LEN)?;
 
-    if input.starts_with('/') || input.ends_with('/') {
-        return Err(
-            ValidationError::invalid_format("key", "must not start or end with '/'").into(),
-        );
-    }
-
-    if input.contains("//") {
-        return Err(
-            ValidationError::invalid_format("key", "must not contain empty path segments").into(),
-        );
-    }
+    reject_edge_slashes("key", input)?;
+    reject_empty_segments("key", input)?;
 
     let segments: Vec<&str> = input.split('/').collect();
 
@@ -58,9 +61,9 @@ pub fn validate_key(input: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validates a namespace prefix.
+/// Validates a namespace.
 ///
-/// Expected examples:
+/// Examples:
 ///
 /// - `agent/claude`
 /// - `project/demo`
@@ -68,29 +71,20 @@ pub fn validate_key(input: &str) -> Result<()> {
 pub fn validate_namespace(input: &str) -> Result<()> {
     validate_common_text("namespace", input, MIN_NAMESPACE_LEN, MAX_NAMESPACE_LEN)?;
 
-    if input.starts_with('/') || input.ends_with('/') {
-        return Err(
-            ValidationError::invalid_format("namespace", "must not start or end with '/'").into(),
-        );
-    }
-
-    if input.contains("//") {
-        return Err(ValidationError::invalid_format(
-            "namespace",
-            "must not contain empty path segments",
-        )
-        .into());
-    }
+    reject_edge_slashes("namespace", input)?;
+    reject_empty_segments("namespace", input)?;
 
     let segments: Vec<&str> = input.split('/').collect();
 
     if segments.len() > MAX_SEGMENT_COUNT {
-        return Err(ValidationError::too_long(
-            "namespace_segments",
-            segments.len(),
-            MAX_SEGMENT_COUNT,
-        )
-        .into());
+        return Err(
+            ValidationError::too_long(
+                "namespace_segments",
+                segments.len(),
+                MAX_SEGMENT_COUNT,
+            )
+            .into(),
+        );
     }
 
     for segment in segments {
@@ -100,7 +94,7 @@ pub fn validate_namespace(input: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validates a leaf segment intended to be appended to a namespace.
+/// Validates a leaf key segment.
 ///
 /// Examples:
 ///
@@ -113,24 +107,20 @@ pub fn validate_key_leaf(input: &str) -> Result<()> {
 
 /// Validates a stored value.
 ///
-/// Values remain text in v1, but size boundaries are enforced.
+/// Values are UTF-8 text in v1.
 pub fn validate_value(input: &str) -> Result<()> {
     validate_common_text("value", input, MIN_VALUE_LEN, MAX_VALUE_LEN)?;
 
     if input.contains('\0') {
-        return Err(ValidationError::invalid_format("value", "must not contain NUL bytes").into());
+        return Err(
+            ValidationError::invalid_format("value", "must not contain NUL bytes").into(),
+        );
     }
 
     Ok(())
 }
 
 /// Validates a project name.
-///
-/// Project names are stricter than generic values because they may be used in:
-///
-/// - default namespaces
-/// - config fields
-/// - suggested directories
 pub fn validate_project_name(input: &str) -> Result<()> {
     validate_common_text(
         "project_name",
@@ -144,28 +134,30 @@ pub fn validate_project_name(input: &str) -> Result<()> {
             continue;
         }
 
-        return Err(ValidationError::InvalidCharacter {
-            field: "project_name",
-            character: ch,
-            index,
-        }
-        .into());
+        return Err(
+            ValidationError::InvalidCharacter {
+                field: "project_name",
+                character: ch,
+                index,
+            }
+            .into(),
+        );
     }
 
     if input.starts_with('-') || input.ends_with('-') {
-        return Err(ValidationError::invalid_format(
-            "project_name",
-            "must not start or end with '-'",
-        )
-        .into());
+        return Err(
+            ValidationError::invalid_format(
+                "project_name",
+                "must not start or end with '-'",
+            )
+            .into(),
+        );
     }
 
     Ok(())
 }
 
-/// Validates a store file path.
-///
-/// This is policy validation, not a security guarantee.
+/// Validates a store path.
 pub fn validate_store_path(path: &Path) -> Result<()> {
     let rendered = path.to_string_lossy();
 
@@ -175,17 +167,42 @@ pub fn validate_store_path(path: &Path) -> Result<()> {
 
     if rendered.len() > MAX_STORE_PATH_LEN {
         return Err(
-            ValidationError::too_long("store_path", rendered.len(), MAX_STORE_PATH_LEN).into(),
+            ValidationError::too_long(
+                "store_path",
+                rendered.len(),
+                MAX_STORE_PATH_LEN,
+            )
+            .into(),
         );
     }
 
     let file_name = path.file_name().ok_or_else(|| {
-        ValidationError::invalid_path("store_path", "path must include a file name")
+        ValidationError::invalid_path(
+            "store_path",
+            "path must include a file name",
+        )
     })?;
 
-    if file_name.to_string_lossy().trim().is_empty() {
+    let file_name = file_name.to_string_lossy();
+
+    if file_name.trim().is_empty() {
         return Err(
-            ValidationError::invalid_path("store_path", "file name must not be empty").into(),
+            ValidationError::invalid_path(
+                "store_path",
+                "file name must not be empty",
+            )
+            .into(),
+        );
+    }
+
+    if file_name.len() > MAX_STORE_FILE_NAME_LEN {
+        return Err(
+            ValidationError::too_long(
+                "store_file_name",
+                file_name.len(),
+                MAX_STORE_FILE_NAME_LEN,
+            )
+            .into(),
         );
     }
 
@@ -196,22 +213,22 @@ pub fn validate_store_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Validates a single namespace/key segment.
-///
-/// Allowed characters:
-///
-/// - `a-z`
-/// - `A-Z`
-/// - `0-9`
-/// - `_`
-/// - `-`
-/// - `.`
+/// Validates one namespace/key segment.
 fn validate_segment(field: &'static str, segment: &str) -> Result<()> {
-    validate_common_text(field, segment, MIN_KEY_SEGMENT_LEN, MAX_KEY_SEGMENT_LEN)?;
+    validate_common_text(
+        field,
+        segment,
+        MIN_KEY_SEGMENT_LEN,
+        MAX_KEY_SEGMENT_LEN,
+    )?;
 
     if segment == "." || segment == ".." {
         return Err(
-            ValidationError::invalid_segment(field, "reserved segment is not allowed").into(),
+            ValidationError::invalid_segment(
+                field,
+                "reserved segment is not allowed",
+            )
+            .into(),
         );
     }
 
@@ -220,18 +237,20 @@ fn validate_segment(field: &'static str, segment: &str) -> Result<()> {
             continue;
         }
 
-        return Err(ValidationError::InvalidCharacter {
-            field,
-            character: ch,
-            index,
-        }
-        .into());
+        return Err(
+            ValidationError::InvalidCharacter {
+                field,
+                character: ch,
+                index,
+            }
+            .into(),
+        );
     }
 
     Ok(())
 }
 
-/// Shared validation for bounded UTF-8 text fields.
+/// Shared UTF-8 bounded text validation.
 fn validate_common_text(
     field: &'static str,
     input: &str,
@@ -246,66 +265,107 @@ fn validate_common_text(
 
     if !within_range(len, min_len, max_len) {
         if len < min_len {
-            return Err(ValidationError::too_short(field, len, min_len).into());
+            return Err(
+                ValidationError::too_short(field, len, min_len).into(),
+            );
         }
 
-        return Err(ValidationError::too_long(field, len, max_len).into());
+        return Err(
+            ValidationError::too_long(field, len, max_len).into(),
+        );
     }
 
     if input.contains('\0') {
-        return Err(ValidationError::invalid_format(field, "must not contain NUL bytes").into());
+        return Err(
+            ValidationError::invalid_format(
+                field,
+                "must not contain NUL bytes",
+            )
+            .into(),
+        );
     }
 
     Ok(())
 }
 
-/// Validates path components for obvious misuse patterns.
-///
-/// Notes:
-/// - Relative paths are allowed.
-/// - Parent traversal segments are rejected.
-/// - Prefix/root components are allowed where the platform emits them.
+fn reject_edge_slashes(field: &'static str, input: &str) -> Result<()> {
+    if input.starts_with('/') || input.ends_with('/') {
+        return Err(
+            ValidationError::invalid_format(
+                field,
+                "must not start or end with '/'",
+            )
+            .into(),
+        );
+    }
+
+    Ok(())
+}
+
+fn reject_empty_segments(field: &'static str, input: &str) -> Result<()> {
+    if input.contains("//") {
+        return Err(
+            ValidationError::invalid_format(
+                field,
+                "must not contain empty path segments",
+            )
+            .into(),
+        );
+    }
+
+    Ok(())
+}
+
+/// Validates path components.
 fn validate_path_component(component: Component<'_>) -> Result<()> {
     match component {
-        Component::ParentDir => Err(ValidationError::invalid_path(
-            "store_path",
-            "parent traversal ('..') is not allowed",
-        )
-        .into()),
+        Component::ParentDir => Err(
+            ValidationError::invalid_path(
+                "store_path",
+                "parent traversal ('..') is not allowed",
+            )
+            .into(),
+        ),
 
         Component::Normal(name) => {
             let rendered = name.to_string_lossy();
 
             if rendered.trim().is_empty() {
-                return Err(ValidationError::invalid_path(
-                    "store_path",
-                    "path segment must not be empty",
-                )
-                .into());
+                return Err(
+                    ValidationError::invalid_path(
+                        "store_path",
+                        "path segment must not be empty",
+                    )
+                    .into(),
+                );
             }
 
             if rendered == "." || rendered == ".." {
-                return Err(ValidationError::invalid_path(
-                    "store_path",
-                    "reserved path segment is not allowed",
-                )
-                .into());
+                return Err(
+                    ValidationError::invalid_path(
+                        "store_path",
+                        "reserved path segment is not allowed",
+                    )
+                    .into(),
+                );
             }
 
             Ok(())
         }
 
-        Component::CurDir | Component::RootDir | Component::Prefix(_) => Ok(()),
+        Component::CurDir
+        | Component::RootDir
+        | Component::Prefix(_) => Ok(()),
     }
 }
 
-/// Returns `true` if a character is allowed in key/namespace segments.
+/// Returns true if character is allowed in key segments.
 #[must_use]
 const fn is_segment_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')
 }
 
-/// Returns `true` if a character is allowed in project names.
+/// Returns true if character is allowed in project names.
 #[must_use]
 const fn is_project_name_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')

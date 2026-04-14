@@ -15,6 +15,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::core::limits::{
+    DEFAULT_QUERY_TOKEN_BUDGET, DEFAULT_QUERY_TOP_K, INDEX_CHUNK_BYTE_TARGET,
+    INDEX_CHUNK_LINE_TARGET, INDEX_MAX_FILE_BYTES, INDEX_MAX_POSTINGS_PER_TOKEN,
+    INDEX_MAX_TOKEN_LEN, INDEX_MAX_TOP_K, INDEX_METADATA_SUMMARY_MAX_LEN,
+    INDEX_MIN_TOKEN_BUDGET, INDEX_MIN_TOKEN_LEN,
+};
 use crate::error::{AgentMemoryError, Result, StoreError};
 use crate::store::Store;
 use crate::types::{Key, Namespace, Value};
@@ -26,19 +32,6 @@ const INDEX_TOKEN_NAMESPACE: &str = "index/token";
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
 
-const MAX_FILE_BYTES: usize = 256 * 1024;
-const CHUNK_LINE_TARGET: usize = 40;
-const CHUNK_BYTE_TARGET: usize = 3_500;
-const MAX_POSTINGS_PER_TOKEN: usize = 256;
-
-const DEFAULT_TOP_K: usize = 8;
-const DEFAULT_TOKEN_BUDGET: usize = 4_000;
-const MAX_TOP_K: usize = 64;
-const MIN_TOKEN_BUDGET: usize = 128;
-
-const MIN_TOKEN_LEN: usize = 2;
-const MAX_TOKEN_LEN: usize = 40;
-
 /// Build-time index report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexBuildReport {
@@ -46,7 +39,9 @@ pub struct IndexBuildReport {
     pub root: String,
     /// Number of files indexed.
     pub file_count: usize,
-    /// Number of text files skipped.
+    /// Number of files represented only as metadata summaries.
+    pub metadata_only_files: usize,
+    /// Number of text files that could not be indexed at all.
     pub skipped_files: usize,
     /// Number of chunks persisted.
     pub chunk_count: usize,
@@ -63,6 +58,8 @@ pub struct IndexStats {
     pub root: Option<String>,
     /// Number of indexed files.
     pub file_count: usize,
+    /// Number of metadata-only files.
+    pub metadata_only_files: usize,
     /// Number of indexed chunks.
     pub chunk_count: usize,
     /// Number of indexed tokens.
@@ -78,9 +75,9 @@ pub struct QueryChunk {
     pub chunk_id: String,
     /// Relative file path.
     pub path: String,
-    /// 1-based start line.
+    /// 1-based start line, or 0 for metadata-only records.
     pub line_start: usize,
-    /// 1-based end line.
+    /// 1-based end line, or 0 for metadata-only records.
     pub line_end: usize,
     /// Integer relevance score.
     pub score: u32,
@@ -131,12 +128,16 @@ pub fn build_index(store: &mut Store, root: &Path) -> Result<IndexBuildReport> {
 
     let mut token_map: HashMap<String, BTreeSet<String>> = HashMap::new();
     let mut records = Vec::<ChunkRecord>::new();
-    let mut skipped_files = 0;
+    let mut skipped_files = 0usize;
+    let mut metadata_only_files = 0usize;
     let mut chunk_ids = HashSet::<String>::new();
 
     for path in &files {
         match index_file(path, &root, &mut records, &mut token_map, &mut chunk_ids) {
-            Ok(()) => {}
+            Ok(IndexDisposition::FullText) => {}
+            Ok(IndexDisposition::MetadataOnly) => {
+                metadata_only_files += 1;
+            }
             Err(IndexFileOutcome::Skipped) => {
                 skipped_files += 1;
             }
@@ -152,7 +153,7 @@ pub fn build_index(store: &mut Store, root: &Path) -> Result<IndexBuildReport> {
         let _ = store.set(key, value)?;
     }
 
-    let mut token_count = 0;
+    let mut token_count = 0usize;
     let mut token_entries: Vec<(String, BTreeSet<String>)> = token_map.into_iter().collect();
     token_entries.sort_by(|left, right| left.0.cmp(&right.0));
 
@@ -161,7 +162,10 @@ pub fn build_index(store: &mut Store, root: &Path) -> Result<IndexBuildReport> {
             continue;
         }
 
-        let ids: Vec<String> = postings.into_iter().take(MAX_POSTINGS_PER_TOKEN).collect();
+        let ids: Vec<String> = postings
+            .into_iter()
+            .take(INDEX_MAX_POSTINGS_PER_TOKEN)
+            .collect();
 
         if ids.is_empty() {
             continue;
@@ -180,6 +184,7 @@ pub fn build_index(store: &mut Store, root: &Path) -> Result<IndexBuildReport> {
     set_meta(store, "root", &root_display)?;
     set_meta(store, "built_unix_seconds", &built_unix_seconds.to_string())?;
     set_meta(store, "file_count", &files.len().to_string())?;
+    set_meta(store, "metadata_only_files", &metadata_only_files.to_string())?;
     set_meta(store, "chunk_count", &records.len().to_string())?;
     set_meta(store, "token_count", &token_count.to_string())?;
 
@@ -188,6 +193,7 @@ pub fn build_index(store: &mut Store, root: &Path) -> Result<IndexBuildReport> {
     Ok(IndexBuildReport {
         root: root_display,
         file_count: files.len(),
+        metadata_only_files,
         skipped_files,
         chunk_count: records.len(),
         token_count,
@@ -204,6 +210,7 @@ pub fn read_index_stats(store: &Store) -> IndexStats {
         built,
         root,
         file_count: get_meta_usize(store, "file_count").unwrap_or(0),
+        metadata_only_files: get_meta_usize(store, "metadata_only_files").unwrap_or(0),
         chunk_count: get_meta_usize(store, "chunk_count").unwrap_or(0),
         token_count: get_meta_usize(store, "token_count").unwrap_or(0),
         built_unix_seconds: get_meta_u64(store, "built_unix_seconds"),
@@ -343,29 +350,23 @@ enum IndexFileOutcome {
     Failed(AgentMemoryError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexDisposition {
+    FullText,
+    MetadataOnly,
+}
+
 fn index_file(
     path: &Path,
     root: &Path,
     records: &mut Vec<ChunkRecord>,
     token_map: &mut HashMap<String, BTreeSet<String>>,
     chunk_ids: &mut HashSet<String>,
-) -> std::result::Result<(), IndexFileOutcome> {
+) -> std::result::Result<IndexDisposition, IndexFileOutcome> {
     let metadata = fs::metadata(path).map_err(map_index_file_error)?;
     let Ok(size) = usize::try_from(metadata.len()) else {
         return Err(IndexFileOutcome::Skipped);
     };
-
-    if size > MAX_FILE_BYTES {
-        return Err(IndexFileOutcome::Skipped);
-    }
-
-    let Ok(content) = fs::read_to_string(path) else {
-        return Err(IndexFileOutcome::Skipped);
-    };
-
-    if content.trim().is_empty() {
-        return Ok(());
-    }
 
     let rel_path = match path.strip_prefix(root) {
         Ok(relative) => relative.to_path_buf(),
@@ -373,7 +374,73 @@ fn index_file(
     };
     let rel_path_display = path_to_unix_string(&rel_path);
 
+    if size > INDEX_MAX_FILE_BYTES {
+        let summary = build_metadata_summary(path, &rel_path_display, size, "oversized-file");
+        push_metadata_record(
+            &rel_path_display,
+            &summary,
+            records,
+            token_map,
+            chunk_ids,
+        );
+        return Ok(IndexDisposition::MetadataOnly);
+    }
+
+    let raw = fs::read(path).map_err(map_index_file_error)?;
+
+    if raw.is_empty() {
+        let summary = build_metadata_summary(path, &rel_path_display, size, "empty-file");
+        push_metadata_record(
+            &rel_path_display,
+            &summary,
+            records,
+            token_map,
+            chunk_ids,
+        );
+        return Ok(IndexDisposition::MetadataOnly);
+    }
+
+    let content = match String::from_utf8(raw) {
+        Ok(text) => text,
+        Err(_) => {
+            let summary = build_metadata_summary(path, &rel_path_display, size, "binary-file");
+            push_metadata_record(
+                &rel_path_display,
+                &summary,
+                records,
+                token_map,
+                chunk_ids,
+            );
+            return Ok(IndexDisposition::MetadataOnly);
+        }
+    };
+
+    if content.trim().is_empty() {
+        let summary =
+            build_metadata_summary(path, &rel_path_display, size, "whitespace-only-text-file");
+        push_metadata_record(
+            &rel_path_display,
+            &summary,
+            records,
+            token_map,
+            chunk_ids,
+        );
+        return Ok(IndexDisposition::MetadataOnly);
+    }
+
     let chunks = split_into_chunks(&content);
+
+    if chunks.is_empty() {
+        let summary = build_metadata_summary(path, &rel_path_display, size, "unchunked-text-file");
+        push_metadata_record(
+            &rel_path_display,
+            &summary,
+            records,
+            token_map,
+            chunk_ids,
+        );
+        return Ok(IndexDisposition::MetadataOnly);
+    }
 
     for (line_start, line_end, chunk_content) in chunks {
         if chunk_content.trim().is_empty() {
@@ -413,7 +480,97 @@ fn index_file(
         records.push(record);
     }
 
-    Ok(())
+    Ok(IndexDisposition::FullText)
+}
+
+fn push_metadata_record(
+    rel_path_display: &str,
+    summary: &str,
+    records: &mut Vec<ChunkRecord>,
+    token_map: &mut HashMap<String, BTreeSet<String>>,
+    chunk_ids: &mut HashSet<String>,
+) {
+    let chunk_id = make_chunk_id(rel_path_display, 0, 0, summary, chunk_ids);
+
+    let record = ChunkRecord {
+        chunk_id: chunk_id.clone(),
+        path: rel_path_display.to_owned(),
+        line_start: 0,
+        line_end: 0,
+        content: summary.to_owned(),
+    };
+
+    let mut combined = String::with_capacity(
+        rel_path_display
+            .len()
+            .saturating_add(summary.len())
+            .saturating_add(1),
+    );
+    combined.push_str(rel_path_display);
+    combined.push(' ');
+    combined.push_str(summary);
+
+    for token in tokenize(&combined) {
+        token_map.entry(token).or_default().insert(chunk_id.clone());
+    }
+
+    records.push(record);
+}
+
+fn build_metadata_summary(
+    path: &Path,
+    rel_path_display: &str,
+    size: usize,
+    classification: &str,
+) -> String {
+    let extension = path
+        .extension()
+        .and_then(|segment| segment.to_str())
+        .map_or_else(|| "none".to_owned(), |value| value.to_ascii_lowercase());
+
+    let file_name = path
+        .file_name()
+        .and_then(|segment| segment.to_str())
+        .unwrap_or("unknown");
+
+    let kind = classify_file_kind(&extension);
+
+    let summary = format!(
+        "metadata_only=true classification={classification} kind={kind} path={rel_path_display} file_name={file_name} extension={extension} size_bytes={size}"
+    );
+
+    truncate_to_byte_boundary(&summary, INDEX_METADATA_SUMMARY_MAX_LEN)
+}
+
+fn classify_file_kind(extension: &str) -> &'static str {
+    match extension {
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "java" | "c" | "cpp" | "h"
+        | "hpp" | "swift" | "kt" | "rb" | "php" | "lua" | "cs" | "scala" | "sh"
+        | "zsh" | "bash" | "sql" | "md" | "mdx" | "txt" | "toml" | "yaml" | "yml"
+        | "json" | "graphql" | "gql" | "html" | "css" | "scss" => "text",
+        "svg" => "svg",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "ico" => "image",
+        "mp4" | "mov" | "webm" | "avi" | "mkv" => "video",
+        "mp3" | "wav" | "ogg" | "flac" => "audio",
+        "pdf" => "document",
+        "zip" | "tar" | "gz" | "tgz" | "rar" | "7z" => "archive",
+        "woff" | "woff2" | "ttf" | "otf" => "font",
+        _ => "unknown",
+    }
+}
+
+fn truncate_to_byte_boundary(input: &str, max_len: usize) -> String {
+    if input.len() <= max_len {
+        return input.to_owned();
+    }
+
+    let mut end = max_len;
+
+    while !input.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+
+    input[..end].to_owned()
 }
 
 fn map_index_file_error(error: std::io::Error) -> IndexFileOutcome {
@@ -475,21 +632,7 @@ fn should_skip_file(path: &Path) -> bool {
         return true;
     };
 
-    if name.starts_with('.') {
-        return true;
-    }
-
-    let lower = name.to_ascii_lowercase();
-
-    lower.ends_with(".png")
-        || lower.ends_with(".jpg")
-        || lower.ends_with(".jpeg")
-        || lower.ends_with(".gif")
-        || lower.ends_with(".pdf")
-        || lower.ends_with(".zip")
-        || lower.ends_with(".tar")
-        || lower.ends_with(".gz")
-        || lower.ends_with(".lock")
+    name.starts_with('.')
 }
 
 fn split_into_chunks(content: &str) -> Vec<(usize, usize, String)> {
@@ -499,19 +642,27 @@ fn split_into_chunks(content: &str) -> Vec<(usize, usize, String)> {
     let mut current_lines = 0usize;
 
     for (index, line) in content.lines().enumerate() {
+        let prospective_len = if current.is_empty() {
+            line.len()
+        } else {
+            current.len().saturating_add(1).saturating_add(line.len())
+        };
+
+        if !current.is_empty()
+            && (current_lines >= INDEX_CHUNK_LINE_TARGET
+                || prospective_len >= INDEX_CHUNK_BYTE_TARGET)
+        {
+            let end = current_start + current_lines - 1;
+            chunks.push((current_start, end, std::mem::take(&mut current)));
+            current_lines = 0;
+            current_start = index + 1;
+        }
+
         if !current.is_empty() {
             current.push('\n');
         }
         current.push_str(line);
         current_lines += 1;
-
-        if current_lines >= CHUNK_LINE_TARGET || current.len() >= CHUNK_BYTE_TARGET {
-            let end = index + 1;
-            chunks.push((current_start, end, current.clone()));
-            current.clear();
-            current_lines = 0;
-            current_start = end + 1;
-        }
     }
 
     if !current.is_empty() {
@@ -551,8 +702,8 @@ fn push_token(current: &mut String, tokens: &mut Vec<String>) {
 
     let len = current.len();
 
-    let skip = len < MIN_TOKEN_LEN
-        || len > MAX_TOKEN_LEN
+    let skip = len < INDEX_MIN_TOKEN_LEN
+        || len > INDEX_MAX_TOKEN_LEN
         || matches!(
             current.as_str(),
             "fn" | "let"
@@ -604,10 +755,7 @@ fn make_chunk_id(
     content: &str,
     used: &mut HashSet<String>,
 ) -> String {
-    let base = format!(
-        "c{:016x}",
-        fast_hash(&(path, line_start, line_end, content))
-    );
+    let base = format!("c{:016x}", fast_hash(&(path, line_start, line_end, content)));
 
     if !used.contains(&base) {
         let _ = used.insert(base.clone());
@@ -615,8 +763,10 @@ fn make_chunk_id(
     }
 
     let mut suffix = 1usize;
+
     loop {
         let candidate = format!("{base}_{suffix}");
+
         if !used.contains(&candidate) {
             let _ = used.insert(candidate.clone());
             return candidate;
@@ -706,18 +856,18 @@ fn estimate_tokens(content: &str) -> usize {
 
 fn normalize_top_k(top_k: usize) -> usize {
     if top_k == 0 {
-        return DEFAULT_TOP_K;
+        return DEFAULT_QUERY_TOP_K;
     }
 
-    top_k.min(MAX_TOP_K)
+    top_k.min(INDEX_MAX_TOP_K)
 }
 
 fn normalize_token_budget(token_budget: usize) -> usize {
     if token_budget == 0 {
-        return DEFAULT_TOKEN_BUDGET;
+        return DEFAULT_QUERY_TOKEN_BUDGET;
     }
 
-    token_budget.max(MIN_TOKEN_BUDGET)
+    token_budget.max(INDEX_MIN_TOKEN_BUDGET)
 }
 
 fn unix_now() -> u64 {

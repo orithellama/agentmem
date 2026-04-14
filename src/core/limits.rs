@@ -1,7 +1,7 @@
 //! Centralized hard limits for the crate.
 //!
 //! These constants define the operational boundaries for keys, namespaces,
-//! values, configuration fields and storage parsing.
+//! values, indexing payloads, configuration fields and storage parsing.
 //!
 //! Keeping limits in one place makes them:
 //!
@@ -10,13 +10,18 @@
 //! - harder to accidentally drift across modules
 //! - explicit for security review
 //!
-//! These values are intentionally conservative for v1. They can be revisited
-//! later, but they should not change casually because they affect:
+//! These values are conservative but practical for real local project indexing.
+//! They may evolve over time, but should not change casually because they affect:
 //!
 //! - validation behavior
 //! - parser hardening
 //! - denial-of-service resistance
 //! - storage compatibility expectations
+//! - memory usage characteristics
+
+// --------------------------------------------------
+// Keys / namespaces
+// --------------------------------------------------
 
 /// Maximum number of bytes allowed in a key.
 ///
@@ -40,8 +45,7 @@ pub const MIN_KEY_SEGMENT_LEN: usize = 1;
 
 /// Maximum number of namespace segments allowed in a key or namespace.
 ///
-/// This protects against deeply nested path-like structures that are difficult
-/// to reason about and may be abused for oversized inputs.
+/// Protects against abusive deeply nested path inputs.
 pub const MAX_SEGMENT_COUNT: usize = 32;
 
 /// Maximum number of bytes allowed in a namespace.
@@ -50,80 +54,132 @@ pub const MAX_NAMESPACE_LEN: usize = 384;
 /// Minimum number of bytes required for a namespace.
 pub const MIN_NAMESPACE_LEN: usize = 1;
 
+// --------------------------------------------------
+// Project / config
+// --------------------------------------------------
+
 /// Maximum number of bytes allowed in a project name.
-///
-/// Project names should remain short enough to display clearly and map
-/// comfortably into namespaces and filesystem suggestions.
 pub const MAX_PROJECT_NAME_LEN: usize = 128;
 
 /// Minimum number of bytes required for a project name.
 pub const MIN_PROJECT_NAME_LEN: usize = 1;
 
-/// Maximum number of bytes allowed in a value.
+/// Maximum number of bytes allowed in a fully resolved store path string.
+pub const MAX_STORE_PATH_LEN: usize = 4096;
+
+/// Maximum number of bytes allowed in a config file payload.
+pub const MAX_CONFIG_FILE_LEN: usize = 64 * 1024; // 64 KiB
+
+/// Maximum bytes allowed in the primary store file name.
+pub const MAX_STORE_FILE_NAME_LEN: usize = 255;
+
+/// Maximum bytes allowed in a rendered storage format version field.
+pub const MAX_VERSION_FIELD_LEN: usize = 16;
+
+// --------------------------------------------------
+// Values / storage
+// --------------------------------------------------
+
+/// Maximum number of bytes allowed in a generic stored value.
 ///
-/// This is intentionally bounded in v1 to avoid unbounded memory growth and to
-/// keep the local store focused on agent state rather than arbitrary document
-/// storage.
-pub const MAX_VALUE_LEN: usize = 64 * 1024; // 64 KiB
+/// Supports indexing payloads, posting lists, chunk records,
+/// metadata summaries and normal memory values.
+pub const MAX_VALUE_LEN: usize = 512 * 1024; // 512 KiB
 
 /// Minimum number of bytes required for a value.
-///
-/// Empty values are allowed in v1 because explicit emptiness can be meaningful
-/// in agent workflows.
 pub const MIN_VALUE_LEN: usize = 0;
 
 /// Maximum number of bytes allowed in a single serialized line of the storage file.
 ///
-/// This limit protects the parser from unbounded line growth.
-pub const MAX_STORE_LINE_LEN: usize = 128 * 1024; // 128 KiB
+/// Must safely exceed MAX_VALUE_LEN once escaped/encoded.
+pub const MAX_STORE_LINE_LEN: usize = 1024 * 1024; // 1 MiB
 
-/// Maximum number of entries allowed in a single in-memory map instance.
-///
-/// This is a safety boundary, not a promise that every deployment should aim
-/// for this scale.
+/// Maximum number of entries allowed in one in-memory map instance.
 pub const MAX_ENTRY_COUNT: usize = 1_000_000;
 
-/// Maximum number of bytes allowed in a fully resolved store path string.
-///
-/// This is a policy limit to catch unreasonable inputs early.
-pub const MAX_STORE_PATH_LEN: usize = 4096;
-
-/// Maximum number of bytes allowed in a config file payload.
-///
-/// The config format is intentionally small; anything significantly larger is
-/// likely malformed or a misuse of the file.
-pub const MAX_CONFIG_FILE_LEN: usize = 64 * 1024; // 64 KiB
+// --------------------------------------------------
+// Hashmap tuning
+// --------------------------------------------------
 
 /// Default initial capacity for a newly created in-memory map.
-///
-/// This should be large enough to avoid immediate resizing for small projects
-/// without wasting excessive memory.
 pub const DEFAULT_MAP_CAPACITY: usize = 64;
 
 /// Minimum valid capacity for the in-memory map.
-///
-/// Internal map code may round capacities upward depending on its design.
 pub const MIN_MAP_CAPACITY: usize = 16;
 
 /// Maximum load factor before the in-memory map should resize.
-///
-/// The map implementation may use this threshold to balance memory overhead and
-/// lookup performance.
 pub const MAX_LOAD_FACTOR: f64 = 0.70;
 
-/// Maximum number of bytes allowed in a storage format version field once rendered.
-///
-/// This is mainly useful for parser hardening and defensive checks.
-pub const MAX_VERSION_FIELD_LEN: usize = 16;
+// --------------------------------------------------
+// Indexing / repository intelligence
+// --------------------------------------------------
 
-/// Maximum number of bytes allowed in a file name used for the primary store.
+/// Maximum file size eligible for indexing.
 ///
-/// This does not replace filesystem rules; it is a crate-level sanity limit.
-pub const MAX_STORE_FILE_NAME_LEN: usize = 255;
+/// Files above this threshold should be metadata-only or streamed later.
+pub const INDEX_MAX_FILE_BYTES: usize = 2_500 * 1024; // 2.5 MB
 
-/// Returns `true` if the provided length is within the inclusive range.
-///
-/// This helper keeps validation sites a little cleaner.
+/// Target maximum lines per chunk.
+pub const INDEX_CHUNK_LINE_TARGET: usize = 40;
+
+/// Target maximum bytes per chunk.
+pub const INDEX_CHUNK_BYTE_TARGET: usize = 3_500;
+
+/// Maximum bytes for one persisted text chunk.
+pub const INDEX_MAX_TEXT_CHUNK_LEN: usize = 256 * 1024; // 256 KiB
+
+/// Maximum bytes for metadata-only asset records.
+pub const INDEX_METADATA_SUMMARY_MAX_LEN: usize = 64 * 1024; // 64 KiB
+
+/// Maximum number of posting references stored per token.
+pub const INDEX_MAX_POSTINGS_PER_TOKEN: usize = 256;
+
+/// Maximum bytes for serialized posting lists.
+pub const INDEX_MAX_POSTING_LIST_LEN: usize = 512 * 1024; // 512 KiB
+
+/// Maximum assets scanned in one indexing pass.
+pub const INDEX_MAX_ASSET_SCAN_COUNT: usize = 250_000;
+
+/// Maximum file path length persisted in index metadata.
+pub const INDEX_MAX_PATH_LEN: usize = 2048;
+
+/// Maximum image dimension accepted in metadata sanity checks.
+pub const INDEX_MAX_IMAGE_DIMENSION: u32 = 50_000;
+
+// --------------------------------------------------
+// Retrieval / query
+// --------------------------------------------------
+
+/// Default query chunks returned.
+pub const DEFAULT_QUERY_TOP_K: usize = 8;
+
+/// Maximum query chunks returned.
+pub const INDEX_MAX_TOP_K: usize = 64;
+
+/// Minimum retrieval token budget.
+pub const INDEX_MIN_TOKEN_BUDGET: usize = 128;
+
+/// Default retrieval token budget.
+pub const DEFAULT_QUERY_TOKEN_BUDGET: usize = 4_000;
+
+/// Maximum retrieval token budget.
+pub const INDEX_MAX_TOKEN_BUDGET: usize = 64_000;
+
+// --------------------------------------------------
+// Tokenization
+// --------------------------------------------------
+
+/// Minimum indexed token length.
+pub const INDEX_MIN_TOKEN_LEN: usize = 2;
+
+/// Maximum indexed token length.
+pub const INDEX_MAX_TOKEN_LEN: usize = 40;
+
+// --------------------------------------------------
+// Helper
+// --------------------------------------------------
+
+/// Returns true if the provided length is within the inclusive range.
 #[must_use]
 pub const fn within_range(len: usize, min: usize, max: usize) -> bool {
     len >= min && len <= max

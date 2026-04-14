@@ -115,7 +115,8 @@ fn run_inner() -> Result<()> {
         }
 
         Command::Clear => {
-            let confirmed = crate::cli::prompts::prompt_confirm("Delete all entries?", false)?;
+            let confirmed =
+                crate::cli::prompts::prompt_confirm("Delete all entries?", false)?;
 
             if confirmed {
                 let mut store = open_local_store_locked()?;
@@ -127,52 +128,74 @@ fn run_inner() -> Result<()> {
             }
         }
 
-        Command::Index { command } => match command {
-            IndexCommand::Build { root } => {
-                let mut store = open_local_store_locked()?;
-                let root = root.unwrap_or(std::env::current_dir()?);
-                let report = build_index(&mut store, &root)?;
+        Command::Index { command } => {
+            let command =
+                command.unwrap_or(IndexCommand::Build { root: None });
 
-                print_success("index built");
-                print_field("Root", report.root);
-                print_field("Files", report.file_count.to_string());
-                print_field("Skipped", report.skipped_files.to_string());
-                print_field("Chunks", report.chunk_count.to_string());
-                print_field("Tokens", report.token_count.to_string());
-            }
+            match command {
+                IndexCommand::Build { root } => {
+                    let mut store = open_local_store_locked()?;
+                    let root = root.unwrap_or(std::env::current_dir()?);
+                    let report = build_index(&mut store, &root)?;
 
-            IndexCommand::Query {
-                query,
-                top_k,
-                token_budget,
-            } => {
-                let store = open_local_store()?;
-                let result = query_index(&store, &query, top_k, token_budget)?;
-                render_index_query(&result);
-            }
+                    print_success("index built");
+                    print_field("Root", report.root);
+                    print_field("Files", report.file_count.to_string());
+                    print_field("Skipped", report.skipped_files.to_string());
+                    print_field("Chunks", report.chunk_count.to_string());
+                    print_field("Tokens", report.token_count.to_string());
+                }
 
-            IndexCommand::Stats => {
-                let store = open_local_store()?;
-                let stats = read_index_stats(&store);
+                IndexCommand::Query {
+                    query,
+                    top_k,
+                    token_budget,
+                } => {
+                    let store = open_local_store()?;
+                    let result =
+                        query_index(&store, &query, top_k, token_budget)?;
 
-                if !stats.built {
-                    print_info("index not built");
-                } else {
-                    print_heading("Index Stats");
-                    print_field("Root", stats.root.unwrap_or_default());
-                    print_field("Files", stats.file_count.to_string());
-                    print_field("Chunks", stats.chunk_count.to_string());
-                    print_field("Tokens", stats.token_count.to_string());
-                    print_field(
-                        "Built (unix)",
-                        stats
-                            .built_unix_seconds
-                            .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
-                    );
-                    print_blank_line();
+                    render_index_query(&result);
+                }
+
+                IndexCommand::Stats => {
+                    let store = open_local_store()?;
+                    let stats = read_index_stats(&store);
+
+                    if !stats.built {
+                        print_info("index not built");
+                    } else {
+                        print_heading("Index Stats");
+                        print_field(
+                            "Root",
+                            stats.root.unwrap_or_default(),
+                        );
+                        print_field(
+                            "Files",
+                            stats.file_count.to_string(),
+                        );
+                        print_field(
+                            "Chunks",
+                            stats.chunk_count.to_string(),
+                        );
+                        print_field(
+                            "Tokens",
+                            stats.token_count.to_string(),
+                        );
+                        print_field(
+                            "Built (unix)",
+                            stats
+                                .built_unix_seconds
+                                .map_or_else(
+                                    || "unknown".to_owned(),
+                                    |value| value.to_string(),
+                                ),
+                        );
+                        print_blank_line();
+                    }
                 }
             }
-        },
+        }
     }
 
     Ok(())
@@ -239,7 +262,7 @@ enum Command {
     /// Build and query local code index.
     Index {
         #[command(subcommand)]
-        command: IndexCommand,
+        command: Option<IndexCommand>,
     },
 }
 
@@ -341,8 +364,13 @@ fn render_index_query(result: &QueryResult) {
     for chunk in &result.chunks {
         print_line(format!(
             "{}:{}-{} score={} est_tokens={}",
-            chunk.path, chunk.line_start, chunk.line_end, chunk.score, chunk.estimated_tokens
+            chunk.path,
+            chunk.line_start,
+            chunk.line_end,
+            chunk.score,
+            chunk.estimated_tokens
         ));
+
         print_line(truncate_for_terminal(&chunk.content, 700));
         print_blank_line();
     }
@@ -353,7 +381,9 @@ fn truncate_for_terminal(input: &str, max_len: usize) -> String {
         return input.to_owned();
     }
 
-    let mut clipped = input.chars().take(max_len).collect::<String>();
+    let mut clipped =
+        input.chars().take(max_len).collect::<String>();
+
     clipped.push_str("...");
     clipped
 }
