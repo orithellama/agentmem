@@ -285,7 +285,7 @@ impl Store {
     /// Consumes the store and returns the inner config.
     #[must_use]
     pub fn into_config(self) -> Config {
-        self.config
+        self.config.clone()
     }
 
     /// Returns the backing path.
